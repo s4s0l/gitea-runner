@@ -5,6 +5,11 @@ on:
     inputs:
       tag:
         description: Custom tag to publish
+
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   publish-custom:
     runs-on: ubuntu-latest
