@@ -180,11 +180,54 @@ func (cr *containerReference) GetContainerArchive(ctx context.Context, srcPath s
 	if cr.id == "" {
 		return nil, cr.missingContainerError("get archive %s", srcPath)
 	}
-	result, err := cr.cli.CopyFromContainer(ctx, cr.id, client.CopyFromContainerOptions{SourcePath: srcPath})
-	if err != nil {
-		return nil, err
+	return cr.execReadTar(ctx, srcPath)
+}
+
+// execReadTar reads srcPath from the container using "tar -c" via exec, returning
+// the raw tar stream. Using exec avoids CopyFromContainer which fails with sysbox.
+func (cr *containerReference) execReadTar(ctx context.Context, srcPath string) (io.ReadCloser, error) {
+	// Split srcPath using forward-slash (container paths are always Linux).
+	lastSlash := strings.LastIndex(srcPath, "/")
+	dir := srcPath[:lastSlash]
+	base := srcPath[lastSlash+1:]
+	if dir == "" {
+		dir = "/"
 	}
-	return result.Content, nil
+
+	idResp, err := cr.cli.ExecCreate(ctx, cr.id, client.ExecCreateOptions{
+		User:         "0",
+		Cmd:          []string{"tar", "-c", "-C", dir, base},
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("exec create for tar read: %w", err)
+	}
+	resp, err := cr.cli.ExecAttach(ctx, idResp.ID, client.ExecAttachOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("exec attach for tar read: %w", err)
+	}
+
+	pr, pw := io.Pipe()
+	go func() {
+		defer resp.Close()
+		if _, err := stdcopy.StdCopy(pw, io.Discard, resp.Reader); err != nil {
+			pw.CloseWithError(fmt.Errorf("read tar stream: %w", err))
+			return
+		}
+		inspect, err := cr.cli.ExecInspect(ctx, idResp.ID, client.ExecInspectOptions{})
+		if err != nil {
+			pw.CloseWithError(fmt.Errorf("exec inspect for tar read: %w", err))
+			return
+		}
+		if inspect.ExitCode != 0 {
+			pw.CloseWithError(ExitCodeError(inspect.ExitCode))
+			return
+		}
+		pw.Close()
+	}()
+
+	return pr, nil
 }
 
 func (cr *containerReference) UpdateFromEnv(srcPath string, env *map[string]string) common.Executor {
