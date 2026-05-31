@@ -131,6 +131,15 @@ func (m *mockConn) Close() (err error) {
 	return nil
 }
 
+// discardConn is a net.Conn that silently discards all writes, used in tests
+// where the tar stream content is irrelevant.
+type discardConn struct {
+	net.Conn
+}
+
+func (d *discardConn) Write(b []byte) (int, error) { return len(b), nil }
+func (d *discardConn) Close() error                { return nil }
+
 func TestDockerExecAbort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -239,14 +248,30 @@ func TestDockerWaitFailure(t *testing.T) {
 
 func TestDockerCopyTarStream(t *testing.T) {
 	ctx := context.Background()
+	mkdirConn := &mockConn{}
 
 	client := &mockDockerClient{}
-	client.On("CopyToContainer", ctx, "123", mock.MatchedBy(func(opts mobyclient.CopyToContainerOptions) bool {
-		return opts.DestinationPath == "/" && opts.Content != nil
-	})).Return(mobyclient.CopyToContainerResult{}, nil)
-	client.On("CopyToContainer", ctx, "123", mock.MatchedBy(func(opts mobyclient.CopyToContainerOptions) bool {
-		return opts.DestinationPath == "/var/run/act" && opts.Content != nil
-	})).Return(mobyclient.CopyToContainerResult{}, nil)
+	client.On("ExecCreate", ctx, "123", mock.MatchedBy(func(opts mobyclient.ExecCreateOptions) bool {
+		return len(opts.Cmd) > 0 && opts.Cmd[0] == "mkdir"
+	})).Return(mobyclient.ExecCreateResult{ID: "mkdir-id"}, nil)
+	client.On("ExecAttach", ctx, "mkdir-id", mock.AnythingOfType("client.ExecAttachOptions")).Return(mobyclient.ExecAttachResult{
+		HijackedResponse: mobyclient.HijackedResponse{
+			Conn:   mkdirConn,
+			Reader: bufio.NewReader(strings.NewReader("")),
+		},
+	}, nil)
+	client.On("ExecInspect", ctx, "mkdir-id", mobyclient.ExecInspectOptions{}).Return(mobyclient.ExecInspectResult{ExitCode: 0}, nil)
+	client.On("ExecCreate", ctx, "123", mock.MatchedBy(func(opts mobyclient.ExecCreateOptions) bool {
+		return len(opts.Cmd) > 0 && opts.Cmd[0] == "tar"
+	})).Return(mobyclient.ExecCreateResult{ID: "tar-id"}, nil)
+	client.On("ExecAttach", ctx, "tar-id", mock.AnythingOfType("client.ExecAttachOptions")).Return(mobyclient.ExecAttachResult{
+		HijackedResponse: mobyclient.HijackedResponse{
+			Conn:   &discardConn{},
+			Reader: bufio.NewReader(strings.NewReader("")),
+		},
+	}, nil)
+	client.On("ExecInspect", ctx, "tar-id", mobyclient.ExecInspectOptions{}).Return(mobyclient.ExecInspectResult{ExitCode: 0}, nil)
+
 	cr := &containerReference{
 		id:  "123",
 		cli: client,
@@ -262,13 +287,24 @@ func TestDockerCopyTarStream(t *testing.T) {
 
 func TestDockerCopyTarStreamErrorInCopyFiles(t *testing.T) {
 	ctx := context.Background()
-
 	merr := errors.New("Failure")
+	conn := &mockConn{}
 
 	client := &mockDockerClient{}
-	client.On("CopyToContainer", ctx, "123", mock.MatchedBy(func(opts mobyclient.CopyToContainerOptions) bool {
-		return opts.DestinationPath == "/" && opts.Content != nil
-	})).Return(mobyclient.CopyToContainerResult{}, merr)
+	client.On("ExecCreate", ctx, "123", mock.MatchedBy(func(opts mobyclient.ExecCreateOptions) bool {
+		return len(opts.Cmd) > 0 && opts.Cmd[0] == "mkdir"
+	})).Return(mobyclient.ExecCreateResult{ID: "mkdir-id"}, nil)
+	client.On("ExecAttach", ctx, "mkdir-id", mock.AnythingOfType("client.ExecAttachOptions")).Return(mobyclient.ExecAttachResult{
+		HijackedResponse: mobyclient.HijackedResponse{
+			Conn:   conn,
+			Reader: bufio.NewReader(strings.NewReader("")),
+		},
+	}, nil)
+	client.On("ExecInspect", ctx, "mkdir-id", mobyclient.ExecInspectOptions{}).Return(mobyclient.ExecInspectResult{ExitCode: 0}, nil)
+	client.On("ExecCreate", ctx, "123", mock.MatchedBy(func(opts mobyclient.ExecCreateOptions) bool {
+		return len(opts.Cmd) > 0 && opts.Cmd[0] == "tar"
+	})).Return(mobyclient.ExecCreateResult{}, merr)
+
 	cr := &containerReference{
 		id:  "123",
 		cli: client,
@@ -285,16 +321,13 @@ func TestDockerCopyTarStreamErrorInCopyFiles(t *testing.T) {
 
 func TestDockerCopyTarStreamErrorInMkdir(t *testing.T) {
 	ctx := context.Background()
-
 	merr := errors.New("Failure")
 
 	client := &mockDockerClient{}
-	client.On("CopyToContainer", ctx, "123", mock.MatchedBy(func(opts mobyclient.CopyToContainerOptions) bool {
-		return opts.DestinationPath == "/" && opts.Content != nil
-	})).Return(mobyclient.CopyToContainerResult{}, nil)
-	client.On("CopyToContainer", ctx, "123", mock.MatchedBy(func(opts mobyclient.CopyToContainerOptions) bool {
-		return opts.DestinationPath == "/var/run/act" && opts.Content != nil
-	})).Return(mobyclient.CopyToContainerResult{}, merr)
+	client.On("ExecCreate", ctx, "123", mock.MatchedBy(func(opts mobyclient.ExecCreateOptions) bool {
+		return len(opts.Cmd) > 0 && opts.Cmd[0] == "mkdir"
+	})).Return(mobyclient.ExecCreateResult{}, merr)
+
 	cr := &containerReference{
 		id:  "123",
 		cli: client,
@@ -398,9 +431,16 @@ func TestPublicCopyPipelineHandlesStaleID(t *testing.T) {
 		Return(mobyclient.ContainerListResult{Items: []container.Summary{
 			{ID: "fresh", Names: []string{"/job-1"}},
 		}}, nil)
-	client.On("CopyToContainer", ctx, "fresh", mock.MatchedBy(func(opts mobyclient.CopyToContainerOptions) bool {
-		return opts.DestinationPath == "/var/run/act"
-	})).Return(mobyclient.CopyToContainerResult{}, nil)
+	client.On("ExecCreate", ctx, "fresh", mock.MatchedBy(func(opts mobyclient.ExecCreateOptions) bool {
+		return len(opts.Cmd) > 0 && opts.Cmd[0] == "tar"
+	})).Return(mobyclient.ExecCreateResult{ID: "tar-id"}, nil)
+	client.On("ExecAttach", ctx, "tar-id", mock.AnythingOfType("client.ExecAttachOptions")).Return(mobyclient.ExecAttachResult{
+		HijackedResponse: mobyclient.HijackedResponse{
+			Conn:   &discardConn{},
+			Reader: bufio.NewReader(strings.NewReader("")),
+		},
+	}, nil)
+	client.On("ExecInspect", ctx, "tar-id", mobyclient.ExecInspectOptions{}).Return(mobyclient.ExecInspectResult{ExitCode: 0}, nil)
 
 	cr := &containerReference{id: "stale", cli: client, input: &NewContainerInput{Name: "job-1"}}
 	require.NoError(t, cr.Copy("/var/run/act", &FileEntry{Name: "x", Mode: 0o644})(ctx))

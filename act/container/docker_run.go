@@ -772,37 +772,71 @@ func (cr *containerReference) waitForCommand(ctx context.Context, isTerminal boo
 	}
 }
 
+// execWriteTar pipes tarStream as stdin to "tar -x -C destPath" inside the container.
+// Using exec avoids the CopyToContainer Docker API call, which fails with the sysbox runtime.
+func (cr *containerReference) execWriteTar(ctx context.Context, destPath string, tarStream io.Reader) error {
+	idResp, err := cr.cli.ExecCreate(ctx, cr.id, client.ExecCreateOptions{
+		User:         "0",
+		Cmd:          []string{"tar", "-x", "-C", destPath},
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return fmt.Errorf("exec create for tar copy: %w", err)
+	}
+	resp, err := cr.cli.ExecAttach(ctx, idResp.ID, client.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("exec attach for tar copy: %w", err)
+	}
+	defer resp.Close()
+
+	drainDone := make(chan error, 1)
+	go func() {
+		_, err := stdcopy.StdCopy(io.Discard, io.Discard, resp.Reader)
+		drainDone <- err
+	}()
+
+	// Append a valid empty-tar trailer (two 512-byte zero blocks) so that
+	// tar -x succeeds even when tarStream itself is empty. tar stops reading
+	// at the first EOF marker it finds, so this trailing padding is harmless
+	// for non-empty archives.
+	var eofBlocks bytes.Buffer
+	_ = tar.NewWriter(&eofBlocks).Close()
+	if _, err = io.Copy(resp.Conn, io.MultiReader(tarStream, &eofBlocks)); err != nil {
+		return fmt.Errorf("write tar stream: %w", err)
+	}
+	if err = resp.CloseWrite(); err != nil {
+		return fmt.Errorf("close write for tar copy: %w", err)
+	}
+
+	if err = <-drainDone; err != nil {
+		return fmt.Errorf("drain exec output: %w", err)
+	}
+
+	inspect, err := cr.cli.ExecInspect(ctx, idResp.ID, client.ExecInspectOptions{})
+	if err != nil {
+		return fmt.Errorf("exec inspect for tar copy: %w", err)
+	}
+	if inspect.ExitCode != 0 {
+		return ExitCodeError(inspect.ExitCode)
+	}
+	return nil
+}
+
 func (cr *containerReference) CopyTarStream(ctx context.Context, destPath string, tarStream io.Reader) error {
 	if cr.id == "" {
 		return cr.missingContainerError("copy to %s", destPath)
 	}
-	// Mkdir
-	buf := &bytes.Buffer{}
-	tw := tar.NewWriter(buf)
-	_ = tw.WriteHeader(&tar.Header{
-		Name:     destPath,
-		Mode:     0o777,
-		Typeflag: tar.TypeDir,
-	})
-	tw.Close()
-	_, err := cr.cli.CopyToContainer(ctx, cr.id, client.CopyToContainerOptions{
-		DestinationPath: "/",
-		Content:         buf,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to mkdir to copy content to container: %w", err)
+	if err := cr.exec([]string{"mkdir", "-p", destPath}, nil, "0", "")(ctx); err != nil {
+		return fmt.Errorf("failed to mkdir for tar copy: %w", err)
 	}
-	// Copy Content
-	_, err = cr.cli.CopyToContainer(ctx, cr.id, client.CopyToContainerOptions{
-		DestinationPath: destPath,
-		Content:         tarStream,
-	})
-	if err != nil {
+	if err := cr.execWriteTar(ctx, destPath, tarStream); err != nil {
 		return fmt.Errorf("failed to copy content to container: %w", err)
 	}
 	// If this fails, then folders have wrong permissions on non root container
 	if cr.UID != 0 || cr.GID != 0 {
-		_ = cr.Exec([]string{"chown", "-R", fmt.Sprintf("%d:%d", cr.UID, cr.GID), destPath}, nil, "0", "")(ctx)
+		_ = cr.exec([]string{"chown", "-R", fmt.Sprintf("%d:%d", cr.UID, cr.GID), destPath}, nil, "0", "")(ctx)
 	}
 	return nil
 }
@@ -873,11 +907,7 @@ func (cr *containerReference) copyDir(dstPath, srcPath string, useGitIgnore bool
 		if err != nil {
 			return fmt.Errorf("failed to seek tar archive: %w", err)
 		}
-		_, err = cr.cli.CopyToContainer(ctx, cr.id, client.CopyToContainerOptions{
-			DestinationPath: "/",
-			Content:         tarFile,
-		})
-		if err != nil {
+		if err = cr.execWriteTar(ctx, "/", tarFile); err != nil {
 			return fmt.Errorf("failed to copy content to container: %w", err)
 		}
 		return nil
@@ -913,11 +943,7 @@ func (cr *containerReference) copyContent(dstPath string, files ...*FileEntry) c
 		}
 
 		logger.Debugf("Extracting content to '%s'", dstPath)
-		_, err := cr.cli.CopyToContainer(ctx, cr.id, client.CopyToContainerOptions{
-			DestinationPath: dstPath,
-			Content:         &buf,
-		})
-		if err != nil {
+		if err := cr.execWriteTar(ctx, dstPath, &buf); err != nil {
 			return fmt.Errorf("failed to copy content to container: %w", err)
 		}
 		return nil
