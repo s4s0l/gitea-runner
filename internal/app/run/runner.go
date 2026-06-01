@@ -369,6 +369,7 @@ func (r *Runner) run(ctx context.Context, task *runnerv1.Task, reporter *report.
 		ContainerOptions:      r.cfg.Container.Options,
 		ContainerDaemonSocket: r.cfg.Container.DockerHost,
 		Privileged:            r.cfg.Container.Privileged,
+		DockerImageCache:      r.cfg.Container.DockerImageCache,
 		DefaultActionInstance: r.getDefaultActionsURL(task),
 		PlatformPicker:        r.labels.PickPlatform,
 		Vars:                  task.Vars,

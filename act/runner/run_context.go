@@ -146,6 +146,18 @@ func (rc *RunContext) containerDaemonSocket() string {
 	return rc.Config.ContainerDaemonSocket
 }
 
+// dockerImagesVolume returns the Docker named-volume to mount at /var/lib/docker
+// inside sysbox job containers. Sysbox uses it as the inner Docker daemon's image
+// store, persisting pulled images across runs. Scoped per-repo so fork PRs cannot
+// observe or poison the upstream repository's image cache.
+func (rc *RunContext) dockerImagesVolume() string {
+	if rc.Config.PresetGitHubContext != nil && rc.Config.PresetGitHubContext.Repository != "" {
+		safe := strings.NewReplacer("/", "-", " ", "-").Replace(rc.Config.PresetGitHubContext.Repository)
+		return "docker-images-" + safe
+	}
+	return "docker-images"
+}
+
 // toolcacheVolume returns the Docker named-volume used as RUNNER_TOOL_CACHE
 // (/opt/hostedtoolcache). The name is scoped to the repository so that jobs
 // from different repositories — including forks — cannot read or poison each
@@ -167,8 +179,12 @@ func (rc *RunContext) validVolumes() []string {
 	name := rc.jobContainerName()
 	volumes := slices.Clone(rc.Config.ValidVolumes)
 	// TODO: add a new configuration to control whether the docker daemon can be mounted
-	return append(volumes, rc.toolcacheVolume(), name, name+"-env",
+	volumes = append(volumes, rc.toolcacheVolume(), name, name+"-env",
 		getDockerDaemonSocketMountPath(rc.containerDaemonSocket()))
+	if rc.Config.DockerImageCache {
+		volumes = append(volumes, rc.dockerImagesVolume())
+	}
+	return volumes
 }
 
 // Returns the binds and mounts for the container, resolving paths as appopriate
@@ -186,6 +202,9 @@ func (rc *RunContext) GetBindsAndMounts() ([]string, map[string]string) {
 	mounts := map[string]string{
 		rc.toolcacheVolume(): "/opt/hostedtoolcache",
 		name + "-env":        ext.GetActPath(),
+	}
+	if rc.Config.DockerImageCache {
+		mounts[rc.dockerImagesVolume()] = "/var/lib/docker"
 	}
 
 	if job := rc.Run.Job(); job != nil {
