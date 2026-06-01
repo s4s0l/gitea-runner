@@ -146,6 +146,20 @@ func (rc *RunContext) containerDaemonSocket() string {
 	return rc.Config.ContainerDaemonSocket
 }
 
+// toolcacheVolume returns the Docker named-volume used as RUNNER_TOOL_CACHE
+// (/opt/hostedtoolcache). The name is scoped to the repository so that jobs
+// from different repositories — including forks — cannot read or poison each
+// other's cached tool installations. Falls back to the legacy shared name
+// when no repository context is available (local/test runs).
+func (rc *RunContext) toolcacheVolume() string {
+	if rc.Config.PresetGitHubContext != nil && rc.Config.PresetGitHubContext.Repository != "" {
+		// "owner/repo" → "act-toolcache-owner-repo"
+		safe := strings.NewReplacer("/", "-", " ", "-").Replace(rc.Config.PresetGitHubContext.Repository)
+		return "act-toolcache-" + safe
+	}
+	return "act-toolcache"
+}
+
 // validVolumes returns the volumes allowed on this job's containers: the configured base
 // plus the volumes the runner mounts automatically. It derives a fresh slice every call and
 // never mutates the shared Config (see containerDaemonSocket).
@@ -153,7 +167,7 @@ func (rc *RunContext) validVolumes() []string {
 	name := rc.jobContainerName()
 	volumes := slices.Clone(rc.Config.ValidVolumes)
 	// TODO: add a new configuration to control whether the docker daemon can be mounted
-	return append(volumes, "act-toolcache", name, name+"-env",
+	return append(volumes, rc.toolcacheVolume(), name, name+"-env",
 		getDockerDaemonSocketMountPath(rc.containerDaemonSocket()))
 }
 
@@ -170,8 +184,8 @@ func (rc *RunContext) GetBindsAndMounts() ([]string, map[string]string) {
 	ext := container.LinuxContainerEnvironmentExtensions{}
 
 	mounts := map[string]string{
-		"act-toolcache": "/opt/hostedtoolcache",
-		name + "-env":   ext.GetActPath(),
+		rc.toolcacheVolume(): "/opt/hostedtoolcache",
+		name + "-env":        ext.GetActPath(),
 	}
 
 	if job := rc.Run.Job(); job != nil {
