@@ -31,6 +31,7 @@ import (
 	"gitea.com/gitea/runner/act/model"
 
 	"github.com/docker/go-connections/nat"
+	"github.com/kballard/go-shellquote"
 	"github.com/opencontainers/selinux/go-selinux"
 )
 
@@ -830,11 +831,53 @@ func (rc *RunContext) platformImage(ctx context.Context) string {
 	return rc.runsOnImage(ctx)
 }
 
-func (rc *RunContext) options(_ context.Context) string {
-	// Workflow-defined container options are intentionally ignored: only the
-	// runner admin's ContainerOptions (from config) are applied. This prevents
-	// workflow authors from injecting flags like --runtime=runc, --pid=host,
-	// --net=host, or --cap-add to escape the configured isolation boundary.
+// allowedContainerOptions filters a per-workflow options string to only the
+// flags on the explicit allowlist. Anything not listed is silently dropped,
+// so newly introduced dangerous flags are blocked by default.
+func allowedContainerOptions(options string) string {
+	args, err := shellquote.Split(options)
+	if err != nil {
+		return ""
+	}
+	// Only these flags may be set by workflow authors in container.options.
+	// Flags that control the runtime, namespaces, capabilities, or security
+	// profiles (--runtime, --pid, --ipc, --uts, --userns, --privileged,
+	// --cap-add, --security-opt, --net, --volume, --mount …) are not listed
+	// and are therefore silently discarded.
+	allowed := map[string]bool{
+		"--hostname": true,
+		"--user":     true, "-u": true,
+		"--add-host": true,
+		"--env":      true, "-e": true,
+	}
+	result := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		flagName, _, _ := strings.Cut(arg, "=")
+		if !allowed[flagName] {
+			// split-form flag followed by a value token — skip the value too
+			if !strings.Contains(arg, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+			}
+			continue
+		}
+		result = append(result, arg)
+		// split form: flag and value are separate tokens
+		if !strings.Contains(arg, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			i++
+			result = append(result, args[i])
+		}
+	}
+	return strings.Join(result, " ")
+}
+
+func (rc *RunContext) options(ctx context.Context) string {
+	job := rc.Run.Job()
+	c := job.Container()
+	if c != nil {
+		safe := allowedContainerOptions(rc.ExprEval.Interpolate(ctx, c.Options))
+		return strings.TrimSpace(rc.Config.ContainerOptions + " " + safe)
+	}
 	return rc.Config.ContainerOptions
 }
 

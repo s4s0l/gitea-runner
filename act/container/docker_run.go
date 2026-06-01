@@ -506,6 +506,14 @@ func (cr *containerReference) mergeContainerConfigs(ctx context.Context, config 
 		logger.Warn("--network and --net in the options will be ignored.")
 	}
 	hostConfig.NetworkMode = networkMode
+	// Deny namespace-sharing options regardless of what the options string requested.
+	// These are cleared to the Docker default (empty = private namespace) so that
+	// neither workflow authors nor misconfiguration can share the host's namespaces.
+	// --privileged is already handled above; --net is restored above.
+	hostConfig.PidMode = ""
+	hostConfig.IpcMode = ""
+	hostConfig.UTSMode = ""
+	hostConfig.UsernsMode = container.UsernsMode(input.UsernsMode)
 	logger.Debugf("Merged container.HostConfig ==> %+v", hostConfig)
 
 	return config, hostConfig, nil
