@@ -382,7 +382,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 				UsernsMode:     rc.Config.UsernsMode,
 				Platform:       rc.Config.ContainerArchitecture,
 				AutoRemove:     rc.Config.AutoRemove,
-				Options:        rc.ExprEval.Interpolate(ctx, spec.Options),
+				Options:        rc.Config.ContainerOptions,
 				NetworkMode:    networkName,
 				NetworkAliases: []string{serviceID},
 				ExposedPorts:   exposedPorts,
@@ -797,13 +797,11 @@ func (rc *RunContext) platformImage(ctx context.Context) string {
 	return rc.runsOnImage(ctx)
 }
 
-func (rc *RunContext) options(ctx context.Context) string {
-	job := rc.Run.Job()
-	c := job.Container()
-	if c != nil {
-		return rc.Config.ContainerOptions + " " + rc.ExprEval.Interpolate(ctx, c.Options)
-	}
-
+func (rc *RunContext) options(_ context.Context) string {
+	// Workflow-defined container options are intentionally ignored: only the
+	// runner admin's ContainerOptions (from config) are applied. This prevents
+	// workflow authors from injecting flags like --runtime=runc, --pid=host,
+	// --net=host, or --cap-add to escape the configured isolation boundary.
 	return rc.Config.ContainerOptions
 }
 
