@@ -1,4 +1,16 @@
-# Gitea Runner
+# Gitea Runner Fork
+
+See [./RUNNER_HARDENING.md](./RUNNER_HARDENING.md) for details why I did it.
+
+Generally if you find yourself in situation that you need it. Do not make
+same mistake as I did. I didn't know about https://forgejo.org. Their
+runner https://code.forgejo.org/forgejo/runner already does 100% of 
+security related changes i did here (but better). The missing stuff are
+only sysbox compatibility. From where I stand they seem to care about
+security much more than gitea. If I'd known earlier I'd never install
+gitea :/. 
+
+But until I migrate, thats the place I host the image for myself.
 
 ## Installation
 
