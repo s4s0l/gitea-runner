@@ -155,6 +155,13 @@ container:
   # from the DinD daemon's filesystem. When enabled, ensure the workspace parent
   # directory is also mounted into the runner container and listed in valid_volumes.
   bind_workdir: false
+  # Cache Docker images pulled by the sysbox inner Docker daemon across runs.
+  # When enabled without docker_image_cache_dir, a per-repository Docker named volume
+  # is mounted at /var/lib/docker. When docker_image_cache_dir is set, the runner
+  # bind-mounts <docker_image_cache_dir>/<docker-images-owner-repo> there instead.
+  # Requires runner capacity: 1 to avoid concurrent jobs sharing the same image store.
+  docker_image_cache: false
+  docker_image_cache_dir: ""
 
 host:
   # The parent directory of a job's working directory.

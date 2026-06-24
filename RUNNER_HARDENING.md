@@ -87,12 +87,17 @@ fallback.
 
 **What changed:**
 An opt-in feature (`docker_image_cache: true` in `config.yml`) that mounts a
-persistent named Docker volume at `/var/lib/docker` inside sysbox job containers.
-Sysbox uses this as the inner Docker daemon's image store, so images pulled in one
-run are present in the next without re-downloading.
+persistent per-repository cache at `/var/lib/docker` inside sysbox job containers.
+By default this is a named Docker volume. When `docker_image_cache_dir` is set,
+the runner instead bind-mounts `<docker_image_cache_dir>/<cache-name>` from the
+host. Sysbox uses this as the inner Docker daemon's image store, so images pulled
+in one run are present in the next without re-downloading.
 
-The volume is scoped per-repository (`docker-images-{owner}-{repo}`) via the new
+The cache is scoped per-repository (`docker-images-{owner}-{repo}`) via the new
 `dockerImagesVolume()` helper, following the same pattern as `toolcacheVolume()`.
+For example, with `docker_image_cache_dir: /srv/runner/docker-image-cache`, the
+repository `sasol/repo-test` uses the bind source
+`/srv/runner/docker-image-cache/docker-images-sasol-repo-test`.
 
 > **Note:** requires `capacity: 1`.  At higher concurrency, two jobs from the same
 > repository would share the inner Docker daemon's image store concurrently, which

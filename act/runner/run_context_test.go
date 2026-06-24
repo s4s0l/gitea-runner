@@ -279,6 +279,68 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("DockerImageCacheMount", func(t *testing.T) {
+		tests := []struct {
+			name      string
+			config    *Config
+			wantbind  string
+			wantmount map[string]string
+		}{
+			{
+				name: "disabled",
+				config: &Config{
+					BindWorkdir: false,
+				},
+				wantmount: map[string]string{},
+			},
+			{
+				name: "named volume",
+				config: &Config{
+					BindWorkdir:      false,
+					DockerImageCache: true,
+				},
+				wantmount: map[string]string{"docker-images": "/var/lib/docker"},
+			},
+			{
+				name: "bind mount",
+				config: &Config{
+					BindWorkdir:         false,
+					DockerImageCache:    true,
+					DockerImageCacheDir: "/cache/docker",
+					PresetGitHubContext: &model.GithubContext{Repository: "owner/repo"},
+				},
+				wantbind:  "/cache/docker/docker-images-owner-repo:/var/lib/docker",
+				wantmount: map[string]string{},
+			},
+		}
+
+		for _, testcase := range tests {
+			t.Run(testcase.name, func(t *testing.T) {
+				rc := &RunContext{
+					Name: "TestRCName",
+					Run: &model.Run{
+						Workflow: &model.Workflow{
+							Name: "TestWorkflowName",
+						},
+					},
+					Config: testcase.config,
+				}
+
+				gotbind, gotmount := rc.GetBindsAndMounts()
+
+				if testcase.wantbind != "" {
+					assert.Contains(t, gotbind, testcase.wantbind)
+				}
+				for source, target := range testcase.wantmount {
+					assert.Equal(t, target, gotmount[source])
+				}
+				if testcase.name == "disabled" {
+					assert.NotContains(t, gotmount, "docker-images")
+				}
+			})
+		}
+	})
 }
 
 func TestRunContextValidVolumes(t *testing.T) {
@@ -298,6 +360,12 @@ func TestRunContextValidVolumes(t *testing.T) {
 	// combinations share one *Config, and the previous in-place append was a data race.
 	assert.Equal(t, []string{"my-vol", "/host/path"}, rc.Config.ValidVolumes)
 	assert.Len(t, rc.validVolumes(), len(got), "repeated calls must be stable, not accumulate")
+
+	rc.Config.DockerImageCache = true
+	rc.Config.DockerImageCacheDir = "/cache/docker"
+	rc.Config.PresetGitHubContext = &model.GithubContext{Repository: "owner/repo"}
+	assert.Contains(t, rc.validVolumes(), "/cache/docker/docker-images-owner-repo")
+	assert.NotContains(t, rc.validVolumes(), "docker-images-owner-repo")
 }
 
 // TestInterpolateOutputsIsPerMatrixCombo guards the matrix-output fix: combinations share one

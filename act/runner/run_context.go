@@ -147,16 +147,21 @@ func (rc *RunContext) containerDaemonSocket() string {
 	return rc.Config.ContainerDaemonSocket
 }
 
-// dockerImagesVolume returns the Docker named-volume to mount at /var/lib/docker
-// inside sysbox job containers. Sysbox uses it as the inner Docker daemon's image
-// store, persisting pulled images across runs. Scoped per-repo so fork PRs cannot
-// observe or poison the upstream repository's image cache.
+// dockerImagesVolume returns the per-repo cache name for /var/lib/docker inside
+// sysbox job containers. It is used either as a Docker named volume or as the
+// subdirectory name under DockerImageCacheDir. Sysbox uses it as the inner Docker
+// daemon's image store, persisting pulled images across runs. Scoped per-repo so
+// fork PRs cannot observe or poison the upstream repository's image cache.
 func (rc *RunContext) dockerImagesVolume() string {
 	if rc.Config.PresetGitHubContext != nil && rc.Config.PresetGitHubContext.Repository != "" {
 		safe := strings.NewReplacer("/", "-", " ", "-").Replace(rc.Config.PresetGitHubContext.Repository)
 		return "docker-images-" + safe
 	}
 	return "docker-images"
+}
+
+func (rc *RunContext) dockerImagesCachePath() string {
+	return filepath.Join(rc.Config.DockerImageCacheDir, rc.dockerImagesVolume())
 }
 
 // toolcacheVolume returns the Docker named-volume used as RUNNER_TOOL_CACHE
@@ -183,7 +188,11 @@ func (rc *RunContext) validVolumes() []string {
 	volumes = append(volumes, rc.toolcacheVolume(), name, name+"-env",
 		getDockerDaemonSocketMountPath(rc.containerDaemonSocket()))
 	if rc.Config.DockerImageCache {
-		volumes = append(volumes, rc.dockerImagesVolume())
+		if rc.Config.DockerImageCacheDir != "" {
+			volumes = append(volumes, rc.dockerImagesCachePath())
+		} else {
+			volumes = append(volumes, rc.dockerImagesVolume())
+		}
 	}
 	return volumes
 }
@@ -205,7 +214,11 @@ func (rc *RunContext) GetBindsAndMounts() ([]string, map[string]string) {
 		name + "-env":        ext.GetActPath(),
 	}
 	if rc.Config.DockerImageCache {
-		mounts[rc.dockerImagesVolume()] = "/var/lib/docker"
+		if rc.Config.DockerImageCacheDir != "" {
+			binds = append(binds, fmt.Sprintf("%s:%s", rc.dockerImagesCachePath(), "/var/lib/docker"))
+		} else {
+			mounts[rc.dockerImagesVolume()] = "/var/lib/docker"
+		}
 	}
 
 	if job := rc.Run.Job(); job != nil {

@@ -54,7 +54,8 @@ type Config struct {
 	ContainerArchitecture              string                       // Desired OS/architecture platform for running containers
 	ContainerDaemonSocket              string                       // Path to Docker daemon socket
 	ContainerOptions                   string                       // Options for the job container
-	DockerImageCache                   bool                         // mount persistent per-repo /var/lib/docker volume for sysbox image caching
+	DockerImageCache                   bool                         // mount persistent per-repo /var/lib/docker cache for sysbox image caching
+	DockerImageCacheDir                string                       // host directory for bind-mounted per-repo Docker image caches
 	UseGitIgnore                       bool                         // controls if paths in .gitignore should not be copied into container, default true
 	GitHubInstance                     string                       // GitHub instance to use, default "github.com"
 	ContainerCapAdd                    []string                     // list of kernel capabilities to add to the containers
